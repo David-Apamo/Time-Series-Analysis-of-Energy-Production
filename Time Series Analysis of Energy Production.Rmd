@@ -1,0 +1,264 @@
+---
+title: "Time Series Analysis of Energy Production data"
+author: "David"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r, include=FALSE}
+# Set working directory
+setwd("C:/Users/DAVID/R Programming/Projects/Time Series")
+```
+```{r}
+# Load packages
+pacman::p_load(tidyverse, ggfortify, tseries, forecast)
+```
+```{r}
+# Import data
+Electric_Production <- read_csv("Electric_Production.csv")
+```
+
+The data has 397 observations of 2 variables. Date is coded as a character string and Value is a numeric variable (double) containing the monthly quantity of electricity produced.
+
+```{r}
+# View the first few observations
+head(Electric_Production)
+```
+
+The first observation was recorded on January 1st, 1985.
+
+```{r}
+# Plot the Time Series
+
+# First convert the Date Column into a proper date format
+Electric_Production[["Date"]] <- as.Date(Electric_Production[["Date"]], 
+                                         format = "%m/%d/%Y")
+# Plot
+# define grid and aesthetic mappings
+ggplot(Electric_Production, aes(x = Date, y = Value)) + 
+  # add a line plot layer
+  geom_line() + 
+  # add a smoothing layer to depict the trend, suppress the SE
+  geom_smooth(color = "brown", se = F) + 
+  # use 5 years interval on the X-axis
+  scale_x_date(date_breaks = "5 years", date_labels = "%b-%y") + 
+  # add a title and a subtitle
+  labs(title = "Time Series Plot of Monthly Energy Pruduction", 
+       subtitle = "From 1985 to 2018", y = "Production")
+```
+
+* There is an upward trend in the series.
+* There is also seasonality, though it's not easy to tell the exact points in time where the seasonality is.
+* The series isn't stationary (mean is not constant and the variance seems to increase with the level of the time series, especially towards the end of the series).
+* There are no possible outliers in the data.
+
+```{r}
+# Convert the data into a time series object (the data is a monthly series starting from January 1985)
+Production <- ts(Electric_Production$Value, frequency = 12, start = c(1985,1))
+```
+
+```{r}
+# Plot the time series using ts.plot() function from stats package
+ts.plot(Production)
+```
+
+```{r}
+# Decompose the series to separate it into its constituent elements
+Production_decomposed <- decompose(Production, type = "multiplicative")
+
+# plot the decomposed series
+plot(Production_decomposed)
+```
+
+The upward trend is now clearly depicted in the decomposed time series. The seasonality and the random components are also clearly visible now. 
+
+```{r}
+# Get the estimated values of seasonal component
+Production_decomposed$seasonal
+```
+
+The largest seasonal component is in January (about 1.1491) and the lowest is in April (about 0.8960), indicating that there is a peak in electricity production every January and a trough every April each year.
+
+```{r}
+# Seasonally adjusting the series (removing the seasonality component)
+Production_seasonally_adjusted <- Production - Production_decomposed$seasonal
+# Plot the seasonally adjusted series
+plot(Production_seasonally_adjusted)
+```
+
+The adjusted series now has the trend and random/irregular components only.
+
+The production series seems to have increasing variance towards the end of the series, I'll make the variance stationary by finding the log of the series.
+
+```{r}
+# Log-transform the series
+Log_production <- log(Production)
+
+# Plot the log transformed series
+ts.plot(Log_production)
+```
+
+The variance of the log transformed series is now stationary.
+
+# FORECASTING
+
+Before forecasting, I'll first partition the data into training and test sets, use the training set for model training and test set for evaluating how the model will generalize on unseen data. I will use two models for forecasting i.e. Holt-Winters Exponential Smoothing and Seasonal ARIMA, since my log-transformed series has both the trend and seasonality components, and can be described using an additive model.
+
+```{r}
+# Data Partitioning (use 85 - 15% split)
+training_data <- Electric_Production[1:337, ]
+# Log-transform the training set
+train <- log(ts(training_data$Value, frequency = 12, start = c(1985,1)))
+test_data <- Electric_Production[338:397, ]
+# Log-transform the test set
+test <- log(ts(test_data$Value, frequency = 12, start = c(2013,2)))
+```
+
+```{r}
+# Forecast using Holt-Winters Exponential Smoothing
+Production_forecasts <- HoltWinters(train) # in-sample forecasts
+# View model results
+Production_forecasts
+```
+
+Both alpha and gamma are relatively low (0.4301 and 0.4297 respectively) indicating that the estimate of the level and the estimate of the seasonal component at the current time point are based upon both recent observations and some observations in the distant past, with more weight placed on the most recent observations. The value of beta is 0.00, indicating that the estimate of the slope b of the trend component is not updated over the time series, and instead is set equal to its initial value.
+
+```{r}
+# Plot the in-sample forecasts
+plot(Production_forecasts)
+```
+
+The forecasts made by Holt-Winters Exponential Smoothing model looks good and closely follows the original series. However, the model seems to over predict some of the seasonal peaks.
+
+```{r}
+# Find the in-sample forecast error
+Production_forecasts$SSE
+```
+
+Error sum of squares (0.2097) is closer to zero indicating a good performance.
+
+```{r}
+# Forecast for the next five years i.e. sixty months ahead.
+Production_forecasts2 <- forecast(Production_forecasts, h = 60)
+# Plot the full forecast
+plot(Production_forecasts2)
+```
+
+The forecast closely follows the original series. It is important to note that Exponential Smoothing models are good for short-term forecasts.
+
+# Model Diagnostics
+
+```{r}
+# Check if the residuals have non-zero autocorrelation for the first 20 lags
+Acf(Production_forecasts2$residuals, lag.max = 20)
+```
+
+The ACF plot of residuals shows some autocorrelations at lags 1,4 and 5. The ACF at lag 2 also touches the significance bound.
+
+```{r}
+# Test if the autocorrelations are significant using Ljung-Box test.
+Box.test(Production_forecasts2$residuals, lag = 20, type="Ljung-Box")
+```
+
+The p-value of the Ljung-Box test is much lower than 0.05, providing enough evidence for the non-zero autocorrelation of the residuals. The assumption for zero autocorrelation between the error terms does not hold.
+
+```{r}
+# Do a time series plot of the residuals to check if the residuals have a constant variance
+plot.ts(Production_forecasts2$residuals)
+```
+
+The plot shows that the residuals have a constant variance. The assumption for constant variance of the residual holds.
+
+```{r}
+# Check for normality of residuals
+qqnorm(Production_forecasts2$residuals)
+```
+
+The qq-plot closely resembles a straight line, with little discrepancies on the tails. This implies that the residuals are normally distributed.
+
+From the above ACF plot, Ljung-Box test and normality test for residuals, they show that the assumptions of normality and constant variance of the error terms are met, while that of zero autocorrelation isn't met. Therefore, the Holt-Winters Exponential Smoothing model can still be improved upon.
+
+# Evaluate the performance of Holt-Winters Exponential Smoothing model on test dataset
+
+```{r}
+## Calculate generalization error
+
+# First convert the predictions to the original scale
+obs <- round(2.718282^test, 4)
+preds <- round(2.718282^Production_forecasts2$mean, 4)
+
+# find test SSE and RMSE
+test_SSE <- sum((obs - preds)^2)
+test_SSE
+test_RMSE <- sqrt(test_SSE/60)
+test_RMSE
+```
+
+Holt-Winters Exponential Smoothing model has a validation RMSE of 4.4249, implying that the predictions made by this model would be off by 4.4249 (plus or minus). Not that bad.
+
+```{r}
+# Build a SARIMA model using the auto.arima() function
+sarima_model <- auto.arima(train, seasonal = TRUE)
+# Have a model summary
+summary(sarima_model)
+```
+
+The model is ARIMA(1,1,1)(1,1,2)[12]. Non-seasonal parameters are; p=1, d=1, q=1 (lag 1 differencing (*d*), an autoregressive term of first lag (*p*) and a moving average model of order 1 (*q*)). Seasonal parameters are P=1,  D=1, Q=2, s=12. The training RMSE and MAE are relatively small indicating a good fit.
+
+The Seasonal ARIMA fitted model is:
+
+* Yt^=0.5207Yt−1−0.4695Yt−12−0.9235et−1−0.2354et−12−0.4608et−24+E, where E is some error.
+
+```{r}
+# Forecast using SARIMA model (forecast for the next 60 months)
+sarima_forecasts <- forecast(sarima_model, h = 60)
+
+# Plot the full forecast
+plot(sarima_forecasts)
+```
+
+The forecast follows the pattern of the series closely and steadily.
+
+# Diagnostics for the Seasonal ARIMA model
+
+```{r}
+# Check if there's significant autocorrelations between the residuals
+ggtsdiag(sarima_model, gof.lag = 20)
+```
+
+* Some of the standardized residuals are greater than or less than 3, implying the presence of some outliers in the time series.
+* The ACFs of the first 20 lags do not exceed the significance bounds, and the p-values from Ljung-Box test are also greater than 0.05, providing enough evidence of zero autocorrelations between the error terms.
+
+```{r}
+# Do a time series plot of the residuals to check if the residuals have a constant variance
+plot.ts(sarima_forecasts$residuals)
+```
+
+The plot shows that the residuals have a constant variance, with some little changes over time.
+
+```{r}
+# Check for normality of residuals
+qqnorm(sarima_forecasts$residuals)
+```
+
+The qq-plot closely resembles a straight line, with little discrepancies on the lower tail.
+
+All the assumptions for ARIMA model are therefore met.
+
+# Evaluate performance of the SARIMA model on test data
+
+```{r}
+## Calculate generalization error
+
+# First convert the predictions to the original scale
+obs <- round(2.718282^test, 4)
+sarima_preds <- round(2.718282^sarima_forecasts$mean, 4)
+
+# find test SSE and RMSE
+test_SSE2 <- sum((obs - sarima_preds)^2)
+test_SSE2
+test_RMSE2 <- sqrt(test_SSE2/60)
+test_RMSE2
+```
+
+SARIMA model has a validation RMSE of 3.5, performs better than Holt-Winters Exponential Smoothing model. Predictions made by the SARIMA model would be off by 3.5 (plus or minus).
